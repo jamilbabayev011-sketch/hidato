@@ -19,6 +19,7 @@ def read_board(path):
              if token != "#"]
     if not cells:
         raise ValueError("expected at least one playable cell")
+    # Look up a clue by its number. The value is its index in cells.
     clues = {}
     for i, (r, c) in enumerate(cells):
         token = board[r][c]
@@ -34,6 +35,7 @@ def read_board(path):
 
 
 def neighbors(cells):
+    # Only playable cells are in this lookup, so it also filters out holes and edges.
     indices = {cell: i for i, cell in enumerate(cells)}
     return [[indices[r + dr, c + dc] for dr in (-1, 0, 1) for dc in (-1, 0, 1)
              if (dr or dc) and (r + dr, c + dc) in indices]
@@ -41,6 +43,7 @@ def neighbors(cells):
 
 
 def variable(n, i, k):
+    # Give each cell a block of n IDs. DIMACS IDs start at 1.
     return i * n + k
 
 
@@ -50,23 +53,28 @@ def clauses(n, adjacent, clues):
     placements = ([variable(n, i, k) for i in range(n)] for k in range(1, n + 1))
     for group_set in (groups, placements):
         for group in group_set:
+            # Pick at least one option, then rule out every pair.
             yield group
             for a, b in combinations(group, 2):
                 yield (-a, -b)
 
+    # A fixed clue needs just one literal to force its placement.
     for k, i in clues.items():
         yield (variable(n, i, k),)
 
+    # If this cell holds k, one of its neighbors has to hold k + 1.
     for i, nearby in enumerate(adjacent):
         for k in range(1, n):
             yield [-variable(n, i, k), *(variable(n, j, k + 1) for j in nearby)]
 
 
 def write_cnf(path, n, adjacent, clues):
+    # DIMACS needs the clause count up front, so count before writing.
     count = 2 * n * (1 + n * (n - 1) // 2) + len(clues) + n * (n - 1)
     with path.open("w", encoding="ascii", newline="\n") as output:
         output.write(f"p cnf {n*n} {count}\n")
         for clause in clauses(n, adjacent, clues):
+            # A zero marks the end of each DIMACS clause.
             output.write(" ".join(map(str, clause)) + " 0\n")
     return count
 
@@ -87,6 +95,7 @@ def solve(solver, cnf, timeout, stats):
                 print(line, file=sys.stderr)
         if result.stderr:
             print(result.stderr.rstrip(), file=sys.stderr)
+    # Glucose uses exit codes 10 and 20 for SAT and UNSAT.
     expected = {10: "s SATISFIABLE", 20: "s UNSATISFIABLE"}
     lines = result.stdout.splitlines()
     if result.returncode not in expected or expected[result.returncode] not in lines:
@@ -94,6 +103,7 @@ def solve(solver, cnf, timeout, stats):
         raise ValueError(f"unexpected Glucose output (exit {result.returncode}): {detail}")
     if result.returncode == 20:
         return None
+    # The v lines contain the model. Positive IDs are the placements we keep.
     return {int(token) for line in lines if line.startswith("v ")
             for token in line.split()[1:] if int(token) > 0}
 
@@ -105,6 +115,7 @@ def decode(board, cells, adjacent, clues, model):
         raise ValueError("Glucose model has an unexpected number of true variables")
     used_cells = set()
     for literal in model:
+        # Undo the ID calculation to recover the cell index and number.
         i, offset = divmod(literal - 1, n)
         k = offset + 1
         if i >= n or i in used_cells or k in path:
@@ -115,6 +126,7 @@ def decode(board, cells, adjacent, clues, model):
         raise ValueError("Glucose model violates a clue")
     if any(path[k + 1] not in adjacent[path[k]] for k in range(1, n)):
         raise ValueError("Glucose model violates adjacency")
+    # Start from a copy so the blocked cells stay in the printed grid.
     solution = [row.copy() for row in board]
     for k, i in path.items():
         r, c = cells[i]
